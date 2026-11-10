@@ -1,8 +1,10 @@
 # Подключение модулей
 import ctypes  # вызовы функций Windows
-import math  # логарифм и корень
+import math  # логарифм, корень, косинус
 import os  # имя файла без пути
+import random  # случайный шум
 import struct  # сборка заголовка DIB
+import time  # замер времени фильтрации
 import tkinter as tk  # окно и виджеты
 from tkinter import filedialog, messagebox, ttk  # диалоги и оформление
 from PIL import Image, ImageGrab, ImageTk  # ввод-вывод и показ картинки
@@ -271,6 +273,221 @@ def statistics(rows):
             "median": median, "mode": mode, "entropy": entropy, "count": total}  # все характеристики
 
 
+def put_pixel(rows, x, y, color):
+    # Пиксель ставится только внутри области
+    if 0 <= y < len(rows) and 0 <= x < len(rows[0]):  # координаты внутри
+        rows[y][x] = list(color)  # записываем цвет
+
+
+def draw_line(rows, x1, y1, x2, y2, color):
+    # Отрезок по алгоритму Брезенхема
+    dx = abs(x2 - x1)  # шаг по X
+    dy = -abs(y2 - y1)  # шаг по Y
+    sx = 1 if x1 < x2 else -1  # направление по X
+    sy = 1 if y1 < y2 else -1  # направление по Y
+    error = dx + dy  # начальная ошибка
+    while True:  # идём по точкам
+        put_pixel(rows, x1, y1, color)  # ставим точку
+        if x1 == x2 and y1 == y2:  # дошли до конца
+            break  # выходим
+        double = 2 * error  # удвоенная ошибка
+        if double >= dy:  # шаг по X
+            error += dy  # правим ошибку
+            x1 += sx  # сдвиг по X
+        if double <= dx:  # шаг по Y
+            error += dx  # правим ошибку
+            y1 += sy  # сдвиг по Y
+
+
+def draw_circle(rows, cx, cy, radius, color):
+    # Окружность по алгоритму средней точки
+    x = radius  # смещение по X
+    y = 0  # смещение по Y
+    error = 0  # ошибка
+    while x >= y:  # проходим восьмую часть
+        put_pixel(rows, cx + x, cy + y, color)  # точка 1
+        put_pixel(rows, cx + y, cy + x, color)  # точка 2
+        put_pixel(rows, cx - y, cy + x, color)  # точка 3
+        put_pixel(rows, cx - x, cy + y, color)  # точка 4
+        put_pixel(rows, cx - x, cy - y, color)  # точка 5
+        put_pixel(rows, cx - y, cy - x, color)  # точка 6
+        put_pixel(rows, cx + y, cy - x, color)  # точка 7
+        put_pixel(rows, cx + x, cy - y, color)  # точка 8
+        y += 1  # поднимаемся
+        if error <= 0:  # ошибка внутри
+            error += 2 * y + 1  # правим
+        if error > 0:  # ошибка снаружи
+            x -= 1  # сужаем
+            error -= 2 * x + 1  # правим
+
+
+def add_noise(rows, kind, amount, size, colored):
+    # Искусственный шум на копии области
+    result = copy_pixels(rows)  # копия под шум
+    height = len(rows)  # высота области
+    width = len(rows[0])  # ширина области
+    for _ in range(amount):  # по числу объектов
+        if colored:  # цветной шум
+            color = [random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)]  # случайный цвет
+        else:  # чёрно-белый шум
+            value = 255 if random.random() < 0.5 else 0  # белая или чёрная точка
+            color = [value, value, value]  # серый оттенок
+        x = random.randrange(width)  # центр по X
+        y = random.randrange(height)  # центр по Y
+        if kind == "Точки":  # квадратная точка
+            for dy in range(size):  # по высоте точки
+                for dx in range(size):  # по ширине точки
+                    put_pixel(result, x + dx, y + dy, color)  # ставим пиксель
+        elif kind == "Линии":  # отрезок под углом
+            angle = random.uniform(0, 2 * math.pi)  # случайный угол
+            length = size * 8  # длина отрезка
+            draw_line(result, x, y, int(x + length * math.cos(angle)), int(y + length * math.sin(angle)), color)  # линия
+        else:  # окружность
+            draw_circle(result, x, y, size, color)  # кольцо радиуса size
+    return result  # готовые пиксели
+
+
+def uniform_filter(rows, radius):
+    # Равномерный фильтр: среднее по окну
+    height = len(rows)  # высота области
+    width = len(rows[0])  # ширина области
+    size = 2 * radius + 1  # сторона окна
+    padded = []  # строки с повторёнными краями
+    for row in rows:  # по строкам
+        padded.append([row[0]] * radius + row + [row[-1]] * radius)  # поля слева и справа
+    horizontal = []  # результат по строкам
+    for row in padded:  # по строкам
+        line = []  # новая строка
+        for x in range(width):  # по пикселям
+            r = g = b = 0  # суммы каналов
+            for dx in range(size):  # по окну
+                pixel = row[x + dx]  # соседний пиксель
+                r += pixel[0]  # красный
+                g += pixel[1]  # зелёный
+                b += pixel[2]  # синий
+            line.append([r // size, g // size, b // size])  # среднее окна
+        horizontal.append(line)  # добавляем строку
+    vertical = [horizontal[0]] * radius + horizontal + [horizontal[-1]] * radius  # поля сверху и снизу
+    result = []  # итоговые строки
+    for y in range(height):  # по строкам
+        line = []  # новая строка
+        for x in range(width):  # по пикселям
+            r = g = b = 0  # суммы каналов
+            for dy in range(size):  # по окну
+                pixel = vertical[y + dy][x]  # пиксель строки
+                r += pixel[0]  # красный
+                g += pixel[1]  # зелёный
+                b += pixel[2]  # синий
+            line.append([r // size, g // size, b // size])  # среднее окна
+        result.append(line)  # готовая строка
+    return result  # готовые пиксели
+
+
+def median_filter(rows, radius):
+    # Медианный фильтр: срединное значение окна
+    height = len(rows)  # высота области
+    width = len(rows[0])  # ширина области
+    size = 2 * radius + 1  # сторона окна
+    padded = []  # строки с полями по краям
+    for row in rows:  # по строкам
+        padded.append([row[0]] * radius + row + [row[-1]] * radius)  # поля слева и справа
+    vertical = [padded[0]] * radius + padded + [padded[-1]] * radius  # поля сверху и снизу
+    middle = size * size // 2  # номер срединного элемента
+    result = []  # итоговые строки
+    for y in range(height):  # по строкам
+        line = []  # новая строка
+        for x in range(width):  # по пикселям
+            red = []  # красные каналы окна
+            green = []  # зелёные каналы окна
+            blue = []  # синие каналы окна
+            for dy in range(size):  # по строкам окна
+                part = vertical[y + dy][x:x + size]  # пиксели строки окна
+                for pixel in part:  # по пикселям окна
+                    red.append(pixel[0])  # красный
+                    green.append(pixel[1])  # зелёный
+                    blue.append(pixel[2])  # синий
+            red.sort()  # сортируем красные
+            green.sort()  # сортируем зелёные
+            blue.sort()  # сортируем синие
+            line.append([red[middle], green[middle], blue[middle]])  # медиана каналов
+        result.append(line)  # готовая строка
+    return result  # готовые пиксели
+
+
+def sharpen_kernel(rows, strength):
+    # Повышение резкости ядром 3 x 3
+    height = len(rows)  # высота области
+    width = len(rows[0])  # ширина области
+    k = strength / 2  # сила ядра
+    center = 1 + k  # вес центрального пикселя
+    side = -k / 8  # вес соседей
+    padded = []  # строки с полями по краям
+    for row in rows:  # по строкам
+        padded.append([row[0]] + row + [row[-1]])  # поля слева и справа
+    padded = [padded[0]] + padded + [padded[-1]]  # поля сверху и снизу
+    result = []  # итоговые строки
+    for y in range(height):  # по строкам
+        line = []  # новая строка
+        for x in range(width):  # по пикселям
+            r = g = b = 0.0  # суммы каналов
+            for dy in range(3):  # по строкам окна
+                part = padded[y + dy][x:x + 3]  # три пикселя строки
+                for dx in range(3):  # по столбцам окна
+                    pixel = part[dx]  # пиксель окна
+                    weight = center if (dy == 1 and dx == 1) else side  # вес пикселя
+                    r += pixel[0] * weight  # красный
+                    g += pixel[1] * weight  # зелёный
+                    b += pixel[2] * weight  # синий
+            line.append([clamp(r), clamp(g), clamp(b)])  # новые значения
+        result.append(line)  # готовая строка
+    return result  # готовые пиксели
+
+
+def unsharp_mask(rows, strength):
+    # Маска нерезкости: исходное плюс разница с размытым
+    soft = uniform_filter(rows, 1)  # размытая копия
+    result = []  # итоговые строки
+    for y in range(len(rows)):  # по строкам
+        line = []  # новая строка
+        for x in range(len(rows[0])):  # по пикселям
+            src = rows[y][x]  # исходный пиксель
+            blur = soft[y][x]  # размытый пиксель
+            line.append([clamp(src[0] + strength * (src[0] - blur[0])),
+                         clamp(src[1] + strength * (src[1] - blur[1])),
+                         clamp(src[2] + strength * (src[2] - blur[2]))])  # усиливаем разницу
+        result.append(line)  # готовая строка
+    return result  # готовые пиксели
+
+
+def emboss(rows, depth):
+    # Тиснение: сглаживание, затем рельеф по перепаду яркости
+    smooth = uniform_filter(rows, 1)  # сглаживаем перед тиснением
+    height = len(smooth)  # высота области
+    width = len(smooth[0])  # ширина области
+    kernel = [[0, -1, 0], [-1, 0, 1], [0, 1, 0]]  # ядро тиснения
+    strength = depth / 2  # коэффициент рельефа
+    padded = []  # строки с полями по краям
+    for row in smooth:  # по строкам
+        padded.append([row[0]] + row + [row[-1]])  # поля слева и справа
+    padded = [padded[0]] + padded + [padded[-1]]  # поля сверху и снизу
+    result = []  # итоговые строки
+    for y in range(height):  # по строкам
+        line = []  # новая строка
+        for x in range(width):  # по пикселям
+            total = 0  # сумма по ядру
+            for dy in range(3):  # по строкам окна
+                part = padded[y + dy][x:x + 3]  # три пикселя строки
+                for dx in range(3):  # по столбцам окна
+                    weight = kernel[dy][dx]  # вес пикселя
+                    if weight:  # нулевые можно пропустить
+                        pixel = part[dx]  # пиксель окна
+                        total += weight * brightness_of(pixel[0], pixel[1], pixel[2])  # вклад пикселя
+            value = clamp(128 + strength * total)  # сдвигаем к среднему серому
+            line.append([value, value, value])  # серый пиксель
+        result.append(line)  # готовая строка
+    return result  # готовые пиксели
+
+
 def copy_to_clipboard(width, height, rows):
     # Кладём изображение в буфер обмена как DIB
     pad = (4 - (width * 3) % 4) % 4  # выравнивание строк до четырёх байт
@@ -294,12 +511,48 @@ def copy_to_clipboard(width, height, rows):
         user32.CloseClipboard()  # отпускаем буфер
 
 
+class ScrollPage(ttk.Frame):
+    # Страница вкладки с вертикальной прокруткой
+    def __init__(self, master):
+        super().__init__(master)  # создаём страницу
+        self.rowconfigure(0, weight=1)  # холст тянется по высоте
+        self.columnconfigure(0, weight=1)  # холст тянется по ширине
+        self.canvas = tk.Canvas(self, width=272, highlightthickness=0)  # холст прокрутки
+        self.canvas.grid(row=0, column=0, sticky="nsew")  # место холста
+        self.scroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)  # полоса прокрутки
+        self.scroll.grid(row=0, column=1, sticky="ns")  # справа от холста
+        self.canvas.configure(yscrollcommand=self.scroll.set)  # связываем полосу и холст
+        self.body = ttk.Frame(self.canvas)  # рамка с блоками
+        self.body.columnconfigure(0, weight=1)  # блоки по ширине страницы
+        self.window = self.canvas.create_window((0, 0), window=self.body, anchor="nw")  # рамка на холсте
+        self.body.bind("<Configure>", self.on_body)  # следим за высотой блоков
+        self.canvas.bind("<Configure>", self.on_canvas)  # следим за шириной страницы
+
+    def on_body(self, event):
+        # Высота прокрутки по содержимому
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))  # все блоки целиком
+        self.update_scrollbar()  # проверяем надобность полосы
+
+    def on_canvas(self, event):
+        # Блоки растягиваются по ширине страницы
+        self.canvas.itemconfigure(self.window, width=event.width)  # ширина рамки
+        self.update_scrollbar()  # проверяем надобность полосы
+
+    def update_scrollbar(self):
+        # Полоса показывается только при нехватке места
+        need = self.body.winfo_reqheight() > self.canvas.winfo_height()  # блоки выше страницы
+        if need and not self.scroll.winfo_ismapped():  # места мало
+            self.scroll.grid()  # показываем полосу
+        elif not need and self.scroll.winfo_ismapped():  # всё помещается
+            self.scroll.grid_remove()  # скрываем полосу
+
+
 class ImageEditor(tk.Tk):
     # Главное окно программы
     def __init__(self):
         super().__init__()  # создаём окно
         self.title("Коррекция фотоизображения")  # заголовок окна
-        self.geometry("1180x780")  # стартовый размер окна
+        self.geometry("1180x820")  # стартовый размер окна
         self.minsize(900, 620)  # меньше окно не делаем
         self.width = 0  # ширина картинки
         self.height = 0  # высота картинки
@@ -319,39 +572,43 @@ class ImageEditor(tk.Tk):
         self.bind("<Configure>", self.on_resize)  # следим за размером окна
 
     def build_interface(self):
-        # Прокручиваемая панель управления
-        holder = ttk.Frame(self, padding=(10, 8, 0, 0))  # контейнер панели
-        holder.grid(row=0, column=0, sticky="ns")  # ставим слева
-        holder.rowconfigure(0, weight=1)  # панель тянется по высоте
-        self.panel_canvas = tk.Canvas(holder, width=286, highlightthickness=0)  # холст прокрутки
-        self.panel_canvas.grid(row=0, column=0, sticky="ns")  # место холста
-        scroll = ttk.Scrollbar(holder, orient="vertical", command=self.panel_canvas.yview)  # полоса прокрутки
-        scroll.grid(row=0, column=1, sticky="ns")  # справа от холста
-        self.panel_scroll = scroll  # ссылка на полосу
-        self.panel_canvas.configure(yscrollcommand=scroll.set)  # связываем полосу и холст
-        panel = ttk.Frame(self.panel_canvas)  # рамка с блоками
-        panel.columnconfigure(0, weight=1)  # блоки по ширине панели
-        self.panel_frame = panel  # ссылка на рамку
-        self.panel_window = self.panel_canvas.create_window((0, 0), window=panel, anchor="nw")  # рамка на холсте
-        panel.bind("<Configure>", self.on_panel_configure)  # следим за высотой блоков
-        self.panel_canvas.bind("<Configure>", self.on_panel_canvas)  # следим за шириной панели
-        self.bind_all("<MouseWheel>", self.on_wheel)  # колесо мыши крутит панель
+        # Левая колонка с общими кнопками и вкладками
+        left = ttk.Frame(self, padding=(10, 8, 0, 0))  # контейнер левой части
+        left.grid(row=0, column=0, sticky="ns")  # ставим слева
+        left.rowconfigure(1, weight=1)  # вкладки тянутся по высоте
+        self.build_file_box(left)  # блок загрузки и сохранения
+        self.notebook = ttk.Notebook(left)  # вкладки с инструментами
+        self.notebook.grid(row=1, column=0, sticky="nsew", pady=(6, 0))  # место вкладок
+        self.page_correction = ScrollPage(self.notebook)  # страница коррекции
+        self.page_filter = ScrollPage(self.notebook)  # страница фильтрации
+        self.notebook.add(self.page_correction, text=" Коррекция ")  # первая вкладка
+        self.notebook.add(self.page_filter, text=" Фильтрация ")  # вторая вкладка
+        self.pages = [self.page_correction, self.page_filter]  # прокручиваемые страницы
+        self.build_correction(self.page_correction.body)  # блоки коррекции
+        self.build_filters(self.page_filter.body)  # блоки фильтрации
+        self.build_view()  # картинка и гистограмма
+        self.build_bottom()  # статистика и сообщения
+        self.bind_all("<MouseWheel>", self.on_wheel)  # колесо мыши крутит страницы
+        self.rowconfigure(0, weight=1)  # верхняя часть растягивается
+        self.columnconfigure(1, weight=1)  # правая часть растягивается
 
+    def build_file_box(self, parent):
         # Блок загрузки и сохранения
-        file_box = ttk.LabelFrame(panel, text="Файл", padding=5)  # рамка блока
-        file_box.grid(row=0, column=0, sticky="ew", pady=2)  # место в панели
-        file_box.columnconfigure(0, weight=1)  # первая колонка кнопок
-        file_box.columnconfigure(1, weight=1)  # вторая колонка кнопок
-        ttk.Button(file_box, text="Из файла", command=self.load_file).grid(row=0, column=0, sticky="ew", padx=1, pady=1)  # загрузка файла
-        ttk.Button(file_box, text="Из буфера", command=self.load_clipboard).grid(row=0, column=1, sticky="ew", padx=1, pady=1)  # загрузка из буфера
-        ttk.Button(file_box, text="В файл", command=self.save_file).grid(row=1, column=0, sticky="ew", padx=1, pady=1)  # сохранение копии
-        ttk.Button(file_box, text="В буфер", command=self.copy_clipboard).grid(row=1, column=1, sticky="ew", padx=1, pady=1)  # копия в буфер
-        ttk.Button(file_box, text="К исходному", command=self.reset_image).grid(row=2, column=0, sticky="ew", padx=1, pady=1)  # возврат к загруженному
-        ttk.Button(file_box, text="Отменить", command=self.undo).grid(row=2, column=1, sticky="ew", padx=1, pady=1)  # шаг назад
+        box = ttk.LabelFrame(parent, text="Файл", padding=5)  # рамка блока
+        box.grid(row=0, column=0, sticky="ew")  # место в колонке
+        box.columnconfigure(0, weight=1)  # первая колонка кнопок
+        box.columnconfigure(1, weight=1)  # вторая колонка кнопок
+        ttk.Button(box, text="Из файла", command=self.load_file).grid(row=0, column=0, sticky="ew", padx=1, pady=1)  # загрузка файла
+        ttk.Button(box, text="Из буфера", command=self.load_clipboard).grid(row=0, column=1, sticky="ew", padx=1, pady=1)  # загрузка из буфера
+        ttk.Button(box, text="В файл", command=self.save_file).grid(row=1, column=0, sticky="ew", padx=1, pady=1)  # сохранение копии
+        ttk.Button(box, text="В буфер", command=self.copy_clipboard).grid(row=1, column=1, sticky="ew", padx=1, pady=1)  # копия в буфер
+        ttk.Button(box, text="К исходному", command=self.reset_image).grid(row=2, column=0, sticky="ew", padx=1, pady=1)  # возврат к загруженному
+        ttk.Button(box, text="Отменить", command=self.undo).grid(row=2, column=1, sticky="ew", padx=1, pady=1)  # шаг назад
 
+    def build_correction(self, panel):
         # Блок выделения области
         sel_box = ttk.LabelFrame(panel, text="Выделение", padding=5)  # рамка блока
-        sel_box.grid(row=1, column=0, sticky="ew", pady=2)  # место в панели
+        sel_box.grid(row=0, column=0, sticky="ew", pady=2)  # место в панели
         sel_box.columnconfigure(0, weight=1)  # одна колонка
         ttk.Button(sel_box, text="Снять выделение", command=self.clear_selection).grid(row=0, column=0, sticky="ew")  # сброс области
         ttk.Label(sel_box, text="Протяните мышью по картинке", foreground="#666").grid(row=1, column=0, sticky="w", pady=(2, 0))  # подсказка
@@ -359,7 +616,7 @@ class ImageEditor(tk.Tk):
 
         # Блок яркости
         bright_box = ttk.LabelFrame(panel, text="Яркость (сдвиг)", padding=5)  # рамка блока
-        bright_box.grid(row=2, column=0, sticky="ew", pady=2)  # место в панели
+        bright_box.grid(row=1, column=0, sticky="ew", pady=2)  # место в панели
         bright_box.columnconfigure(0, weight=1)  # одна колонка
         self.bright_scale = tk.Scale(bright_box, from_=-100, to=100, orient="horizontal", resolution=1)  # ползунок сдвига
         self.bright_scale.grid(row=0, column=0, sticky="ew")  # место ползунка
@@ -367,7 +624,7 @@ class ImageEditor(tk.Tk):
 
         # Блок контрастности
         contrast_box = ttk.LabelFrame(panel, text="Контрастность (сдвиг, %)", padding=5)  # рамка блока
-        contrast_box.grid(row=3, column=0, sticky="ew", pady=2)  # место в панели
+        contrast_box.grid(row=2, column=0, sticky="ew", pady=2)  # место в панели
         contrast_box.columnconfigure(0, weight=1)  # одна колонка
         self.contrast_scale = tk.Scale(contrast_box, from_=-100, to=100, orient="horizontal", resolution=1)  # ползунок контраста
         self.contrast_scale.grid(row=0, column=0, sticky="ew")  # место ползунка
@@ -375,7 +632,7 @@ class ImageEditor(tk.Tk):
 
         # Блок цветности
         color_box = ttk.LabelFrame(panel, text="Цветность", padding=5)  # рамка блока
-        color_box.grid(row=4, column=0, sticky="ew", pady=2)  # место в панели
+        color_box.grid(row=3, column=0, sticky="ew", pady=2)  # место в панели
         color_box.columnconfigure(0, weight=1)  # одна колонка
         self.gray_method = tk.StringVar(value="Взвешенная")  # способ перевода в серое
         ttk.Combobox(color_box, textvariable=self.gray_method, values=["Взвешенная", "Среднее", "Максимум"], state="readonly").grid(row=0, column=0, sticky="ew")  # выбор способа
@@ -391,17 +648,75 @@ class ImageEditor(tk.Tk):
 
         # Блок гистограммы
         hist_box = ttk.LabelFrame(panel, text="Гистограмма", padding=5)  # рамка блока
-        hist_box.grid(row=5, column=0, sticky="ew", pady=2)  # место в панели
+        hist_box.grid(row=4, column=0, sticky="ew", pady=2)  # место в панели
         hist_box.columnconfigure(0, weight=1)  # первая колонка
         hist_box.columnconfigure(1, weight=1)  # вторая колонка
         self.hist_shown = tk.BooleanVar(value=False)  # гистограмма скрыта
         ttk.Checkbutton(hist_box, text="Показать", variable=self.hist_shown, command=self.toggle_histogram).grid(row=0, column=0, columnspan=2, sticky="w")  # галочка показа
         ttk.Button(hist_box, text="Выровнять", command=self.do_equalize).grid(row=1, column=0, sticky="ew", padx=1, pady=2)  # выравнивание
         ttk.Button(hist_box, text="Растянуть", command=self.do_stretch).grid(row=1, column=1, sticky="ew", padx=1, pady=2)  # растяжение
-        panel.update_idletasks()  # сразу считаем размеры блоков
-        self.panel_canvas.configure(scrollregion=self.panel_canvas.bbox("all"))  # область прокрутки
-        self.update_scrollbar()  # полоса только при нехватке места
 
+    def build_filters(self, panel):
+        # Подсказка про выделение
+        ttk.Label(panel, text="Фильтры идут по выделению, если оно задано", foreground="#666").grid(row=0, column=0, sticky="w", padx=2, pady=(0, 2))  # пояснение
+
+        # Блок искусственного шума
+        noise_box = ttk.LabelFrame(panel, text="Шум", padding=5)  # рамка блока
+        noise_box.grid(row=1, column=0, sticky="ew", pady=2)  # место в панели
+        noise_box.columnconfigure(0, weight=1)  # колонка типа шума
+        noise_box.columnconfigure(1, weight=0)  # колонка цвета
+        self.noise_kind = tk.StringVar(value="Точки")  # тип шума
+        ttk.Combobox(noise_box, textvariable=self.noise_kind, values=["Точки", "Линии", "Окружности"], state="readonly", width=11).grid(row=0, column=0, sticky="ew")  # выбор типа
+        self.noise_color = tk.StringVar(value="Чёрно-белый")  # цвет шума
+        ttk.Combobox(noise_box, textvariable=self.noise_color, values=["Чёрно-белый", "Цветной"], state="readonly", width=13).grid(row=0, column=1, sticky="e", padx=(3, 0))  # выбор цвета
+        ttk.Label(noise_box, text="количество объектов", foreground="#666").grid(row=1, column=0, sticky="w", pady=(3, 0))  # подпись
+        self.noise_amount = tk.Scale(noise_box, from_=1, to=200, orient="horizontal", resolution=1)  # ползунок количества
+        self.noise_amount.set(60)  # начальное значение
+        self.noise_amount.grid(row=2, column=0, sticky="ew")  # место ползунка
+        ttk.Label(noise_box, text="размер объекта", foreground="#666").grid(row=3, column=0, sticky="w")  # подпись
+        self.noise_size = tk.Scale(noise_box, from_=1, to=30, orient="horizontal", resolution=1)  # ползунок размера
+        self.noise_size.set(8)  # начальное значение
+        self.noise_size.grid(row=4, column=0, sticky="ew")  # место ползунка
+        ttk.Button(noise_box, text="Наложить шум", command=self.do_noise).grid(row=5, column=0, sticky="ew", pady=(3, 0))  # запуск
+
+        # Блок шумоподавления
+        denoise_box = ttk.LabelFrame(panel, text="Шумоподавление", padding=5)  # рамка блока
+        denoise_box.grid(row=2, column=0, sticky="ew", pady=2)  # место в панели
+        denoise_box.columnconfigure(0, weight=1)  # первая колонка
+        denoise_box.columnconfigure(1, weight=1)  # вторая колонка
+        self.denoise_method = tk.StringVar(value="Равномерный")  # тип фильтра
+        ttk.Combobox(denoise_box, textvariable=self.denoise_method, values=["Равномерный", "Медианный"], state="readonly").grid(row=0, column=0, columnspan=2, sticky="ew")  # выбор фильтра
+        ttk.Label(denoise_box, text="апертура", foreground="#666").grid(row=1, column=0, sticky="w", pady=(3, 0))  # подпись
+        self.aperture_size = tk.StringVar(value="3 x 3")  # размер окна
+        ttk.Combobox(denoise_box, textvariable=self.aperture_size, values=["3 x 3", "5 x 5", "7 x 7", "9 x 9"], state="readonly", width=7).grid(row=1, column=1, sticky="e", pady=(3, 0))  # выбор апертуры
+        ttk.Button(denoise_box, text="Применить", command=self.do_denoise).grid(row=2, column=0, sticky="ew", padx=(0, 2), pady=(4, 0))  # запуск
+        ttk.Button(denoise_box, text="Сравнить", command=self.compare_denoise).grid(row=2, column=1, sticky="ew", padx=(2, 0), pady=(4, 0))  # сравнение
+
+        # Блок резкости
+        sharp_box = ttk.LabelFrame(panel, text="Резкость", padding=5)  # рамка блока
+        sharp_box.grid(row=3, column=0, sticky="ew", pady=2)  # место в панели
+        sharp_box.columnconfigure(0, weight=1)  # первая колонка
+        sharp_box.columnconfigure(1, weight=1)  # вторая колонка
+        self.sharpen_method = tk.StringVar(value="Ядро 3 x 3")  # способ повышения резкости
+        ttk.Combobox(sharp_box, textvariable=self.sharpen_method, values=["Ядро 3 x 3", "Маска нерезкости"], state="readonly").grid(row=0, column=0, sticky="ew")  # выбор способа
+        ttk.Label(sharp_box, text="сила", foreground="#666").grid(row=1, column=0, sticky="w", pady=(3, 0))  # подпись
+        self.sharpen_scale = tk.Scale(sharp_box, from_=1, to=10, orient="horizontal", resolution=1)  # ползунок силы
+        self.sharpen_scale.set(4)  # начальное значение
+        self.sharpen_scale.grid(row=2, column=0, columnspan=2, sticky="ew")  # место ползунка
+        ttk.Button(sharp_box, text="Применить", command=self.do_sharpen).grid(row=3, column=0, sticky="ew", padx=(0, 2), pady=(3, 0))  # запуск
+        ttk.Button(sharp_box, text="Сравнить", command=self.compare_sharpen).grid(row=3, column=1, sticky="ew", padx=(2, 0), pady=(3, 0))  # сравнение
+
+        # Блок тиснения
+        emboss_box = ttk.LabelFrame(panel, text="Тиснение", padding=5)  # рамка блока
+        emboss_box.grid(row=4, column=0, sticky="ew", pady=2)  # место в панели
+        emboss_box.columnconfigure(0, weight=1)  # одна колонка
+        ttk.Label(emboss_box, text="глубина", foreground="#666").grid(row=0, column=0, sticky="w")  # подпись
+        self.emboss_scale = tk.Scale(emboss_box, from_=1, to=5, orient="horizontal", resolution=1)  # ползунок глубины
+        self.emboss_scale.set(3)  # начальное значение
+        self.emboss_scale.grid(row=1, column=0, sticky="ew")  # место ползунка
+        ttk.Button(emboss_box, text="Применить", command=self.do_emboss).grid(row=2, column=0, sticky="ew", pady=(3, 0))  # запуск
+
+    def build_view(self):
         # Правая часть с картинкой
         view = ttk.Frame(self, padding=(0, 8, 8, 0))  # контейнер просмотра
         view.grid(row=0, column=1, sticky="nsew")  # ставим справа
@@ -420,6 +735,7 @@ class ImageEditor(tk.Tk):
         self.hist_canvas.bind("<Leave>", self.on_hist_leave)  # курсор ушёл с графика
         self.hist_frame.grid_remove()  # по умолчанию скрыта
 
+    def build_bottom(self):
         # Нижняя строка со статистикой
         bottom = ttk.Frame(self, padding=(10, 4))  # контейнер строки
         bottom.grid(row=1, column=0, columnspan=2, sticky="ew")  # место внизу
@@ -428,10 +744,6 @@ class ImageEditor(tk.Tk):
         self.stats_label.grid(row=0, column=0, sticky="w")  # слева
         self.status_label = ttk.Label(bottom, text="Готово", foreground="#666")  # сообщения
         self.status_label.grid(row=1, column=0, sticky="w")  # под характеристиками
-
-        # Растягивание окна
-        self.rowconfigure(0, weight=1)  # верхняя часть растягивается
-        self.columnconfigure(1, weight=1)  # правая часть растягивается
 
     def set_status(self, text):
         # Сообщение в нижней строке
@@ -847,31 +1159,158 @@ class ImageEditor(tk.Tk):
             return  # картинки нет
         self.set_status("Гистограмма растянута")  # сообщение
 
-    def update_scrollbar(self):
-        # Полоса прокрутки показывается только при нехватке места
-        need = self.panel_frame.winfo_reqheight() > self.panel_canvas.winfo_height()  # блоки выше панели
-        if need and not self.panel_scroll.winfo_ismapped():  # места мало
-            self.panel_scroll.grid()  # показываем полосу
-        elif not need and self.panel_scroll.winfo_ismapped():  # всё помещается
-            self.panel_scroll.grid_remove()  # скрываем полосу
+    def set_busy(self, text):
+        # Курсор ожидания и сообщение
+        self.config(cursor="watch")  # курсор ожидания
+        self.set_status(text)  # текст внизу
+        self.update_idletasks()  # сразу показываем
 
-    def on_panel_configure(self, event):
-        # Высота прокручиваемой области
-        self.panel_canvas.configure(scrollregion=self.panel_canvas.bbox("all"))  # все блоки целиком
-        self.update_scrollbar()  # проверяем надобность полосы
+    def set_ready(self, text):
+        # Обычный курсор и итоговое сообщение
+        self.config(cursor="")  # обычный курсор
+        self.set_status(text)  # текст внизу
 
-    def on_panel_canvas(self, event):
-        # Блоки растягиваются по ширине панели
-        self.panel_canvas.itemconfigure(self.panel_window, width=event.width)  # ширина рамки
-        self.update_scrollbar()  # проверяем надобность полосы
+    def compare_crop(self):
+        # Небольшой фрагмент области для сравнения
+        x1, y1, x2, y2 = self.region()  # границы области
+        width = min(400, x2 - x1)  # ширина фрагмента
+        height = min(300, y2 - y1)  # высота фрагмента
+        left = x1 + (x2 - x1 - width) // 2  # центрируем по X
+        top = y1 + (y2 - y1 - height) // 2  # центрируем по Y
+        return crop_pixels(self.rows, (left, top, left + width, top + height))  # вырезаем фрагмент
+
+    def crop_note(self, rows):
+        # Подпись фрагмента под картинкой
+        return f"{len(rows[0])} x {len(rows)} пикс., фрагмент 1:1"  # размеры без масштаба
+
+    def show_compare(self, title, items):
+        # Окно сравнения нескольких вариантов
+        window = tk.Toplevel(self)  # отдельное окно
+        window.title(title)  # заголовок окна
+        window.resizable(False, False)  # размер фиксирован
+        frame = ttk.Frame(window, padding=10)  # контейнер вариантов
+        frame.pack(fill="both", expand=True)  # место в окне
+        window.photos = []  # ссылки на картинки
+        for index, (caption, rows, note) in enumerate(items):  # по вариантам
+            image = pixels_to_image(len(rows[0]), len(rows), rows)  # картинка варианта
+            photo = ImageTk.PhotoImage(image)  # картинка для окна
+            window.photos.append(photo)  # сохраняем ссылку
+            ttk.Label(frame, text=caption, font=("Segoe UI", 9, "bold")).grid(row=0, column=index, padx=5, pady=(0, 4))  # подпись
+            ttk.Label(frame, image=photo, relief="solid", borderwidth=1).grid(row=1, column=index, padx=5)  # картинка
+            ttk.Label(frame, text=note, foreground="#666").grid(row=2, column=index, padx=5, pady=(3, 6))  # пояснение
+        ttk.Button(frame, text="Закрыть", command=window.destroy).grid(row=3, column=0, columnspan=len(items), pady=(4, 0))  # закрытие
+        window.update_idletasks()  # считаем размеры окна
+        x = self.winfo_rootx() + (self.winfo_width() - window.winfo_width()) // 2  # центр по X
+        y = self.winfo_rooty() + (self.winfo_height() - window.winfo_height()) // 3  # центр по Y
+        window.geometry(f"+{max(0, x)}+{max(0, y)}")  # ставим окно
+
+    def do_noise(self):
+        # Наложение искусственного шума
+        if not self.require_image():  # картинки нет
+            return  # выходим
+        kind = self.noise_kind.get()  # тип шума
+        colored = self.noise_color.get() == "Цветной"  # цветной или чёрно-белый
+        amount = int(self.noise_amount.get())  # число объектов
+        size = int(self.noise_size.get())  # размер объекта
+        self.apply_to_region(lambda part: add_noise(part, kind, amount, size, colored))  # обрабатываем область
+        mode = "цветной" if colored else "ч/б"  # подпись режима
+        self.set_status(f"Шум: {kind.lower()}, объектов {amount}, {mode}")  # сообщение
+
+    def aperture_radius(self):
+        # Радиус окна по выбранной апертуре
+        return int(self.aperture_size.get().split()[0]) // 2  # половина стороны
+
+    def do_denoise(self):
+        # Шумоподавление выбранным фильтром
+        if not self.require_image():  # картинки нет
+            return  # выходим
+        method = self.denoise_method.get()  # выбранный фильтр
+        radius = self.aperture_radius()  # радиус окна
+        size = 2 * radius + 1  # сторона окна
+        self.set_busy(f"{method} фильтр {size} x {size}...")  # курсор ожидания
+        start = time.perf_counter()  # начало замера
+        if method == "Равномерный":  # равномерный фильтр
+            self.apply_to_region(lambda part: uniform_filter(part, radius))  # обрабатываем область
+        else:  # медианный фильтр
+            self.apply_to_region(lambda part: median_filter(part, radius))  # обрабатываем область
+        spent = time.perf_counter() - start  # время работы
+        self.set_ready(f"{method} {size} x {size}: {spent:.1f} с")  # итог
+
+    def compare_denoise(self):
+        # Сравнение равномерного и медианного фильтров
+        if not self.require_image():  # картинки нет
+            return  # выходим
+        radius = self.aperture_radius()  # радиус окна
+        size = 2 * radius + 1  # сторона окна
+        crop = self.compare_crop()  # фрагмент для сравнения
+        self.set_busy("Считаем фильтры...")  # курсор ожидания
+        start = time.perf_counter()  # начало замера
+        box = uniform_filter(crop, radius)  # равномерный фильтр
+        box_time = time.perf_counter() - start  # время равномерного
+        start = time.perf_counter()  # новый замер
+        med = median_filter(crop, radius)  # медианный фильтр
+        med_time = time.perf_counter() - start  # время медианного
+        self.set_ready("Сравнение готово")  # итог
+        self.show_compare("Шумоподавление", [
+            ("Исходное", crop, self.crop_note(crop)),  # без фильтра
+            (f"Равномерный {size} x {size}", box, f"{box_time:.2f} с"),  # равномерный
+            (f"Медианный {size} x {size}", med, f"{med_time:.2f} с"),  # медианный
+        ])  # открываем окно
+
+    def do_sharpen(self):
+        # Повышение резкости выбранным способом
+        if not self.require_image():  # картинки нет
+            return  # выходим
+        method = self.sharpen_method.get()  # выбранный способ
+        strength = int(self.sharpen_scale.get())  # сила
+        self.set_busy(f"Резкость: {method.lower()}...")  # курсор ожидания
+        start = time.perf_counter()  # начало замера
+        if method == "Ядро 3 x 3":  # повышение ядром
+            self.apply_to_region(lambda part: sharpen_kernel(part, strength))  # обрабатываем область
+        else:  # маска нерезкости
+            self.apply_to_region(lambda part: unsharp_mask(part, strength / 2))  # обрабатываем область
+        spent = time.perf_counter() - start  # время работы
+        self.set_ready(f"Резкость, сила {strength}: {spent:.1f} с")  # итог
+
+    def compare_sharpen(self):
+        # Сравнение способов повышения резкости
+        if not self.require_image():  # картинки нет
+            return  # выходим
+        strength = int(self.sharpen_scale.get())  # сила
+        crop = self.compare_crop()  # фрагмент для сравнения
+        self.set_busy("Считаем резкость...")  # курсор ожидания
+        start = time.perf_counter()  # начало замера
+        kernel = sharpen_kernel(crop, strength)  # по ядру
+        kernel_time = time.perf_counter() - start  # время ядра
+        start = time.perf_counter()  # новый замер
+        mask = unsharp_mask(crop, strength / 2)  # по маске нерезкости
+        mask_time = time.perf_counter() - start  # время маски
+        self.set_ready("Сравнение готово")  # итог
+        self.show_compare("Повышение резкости", [
+            ("Исходное", crop, self.crop_note(crop)),  # без обработки
+            ("Ядро 3 x 3", kernel, f"{kernel_time:.2f} с"),  # по ядру
+            ("Маска нерезкости", mask, f"{mask_time:.2f} с"),  # по маске
+        ])  # открываем окно
+
+    def do_emboss(self):
+        # Тиснение области
+        if not self.require_image():  # картинки нет
+            return  # выходим
+        depth = int(self.emboss_scale.get())  # глубина рельефа
+        self.set_busy("Тиснение...")  # курсор ожидания
+        start = time.perf_counter()  # начало замера
+        self.apply_to_region(lambda part: emboss(part, depth))  # обрабатываем область
+        spent = time.perf_counter() - start  # время работы
+        self.set_ready(f"Тиснение, глубина {depth}: {spent:.1f} с")  # итог
 
     def on_wheel(self, event):
-        # Прокрутка панели колесом мыши
+        # Прокрутка страницы колесом мыши
         widget = event.widget  # виджет под курсором
         while widget is not None:  # идём по родителям
-            if widget is self.panel_canvas:  # курсор над панелью
-                self.panel_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")  # крутим панель
-                return  # прокрутка сделана
+            for page in self.pages:  # по страницам вкладок
+                if widget is page.canvas:  # курсор над страницей
+                    page.canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")  # крутим страницу
+                    return  # прокрутка сделана
             widget = widget.master  # поднимаемся выше
 
     def on_resize(self, event):
